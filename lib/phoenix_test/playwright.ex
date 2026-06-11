@@ -188,8 +188,14 @@ defmodule PhoenixTest.Playwright do
     tap(
       conn,
       &case Frame.goto(&1.frame_id, opts |> ensure_timeout() |> Keyword.put(:url, path)) do
-        {:ok, _} -> :ok
-        {:error, %{error: %{message: "Download is starting"}}} -> :ok
+        {:ok, _} ->
+          :ok
+
+        {:error, %{error: %{message: "Download is starting"}}} ->
+          :ok
+
+        {:error, %{error: %{name: "TimeoutError"}} = error} ->
+          raise ArgumentError, "Could not visit #{inspect(path)}#{timeout_suffix(error)}\n" <> more_info(error)
       end
     )
   end
