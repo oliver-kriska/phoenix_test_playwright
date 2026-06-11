@@ -14,11 +14,13 @@ defmodule PhoenixTest.Playwright.BrowserPool do
   alias PhoenixTest.Playwright.Config
 
   defstruct [
+    :id,
     :size,
     :config,
     available: [],
     in_use: %{},
-    waiting: []
+    waiting: [],
+    launch_count: 0
   ]
 
   @type pool_id :: atom()
@@ -39,7 +41,7 @@ defmodule PhoenixTest.Playwright.BrowserPool do
     {id, opts} = Keyword.pop!(opts, :id)
     {size, opts} = Keyword.pop(opts, :size, ceil(System.schedulers_online() / 2))
 
-    GenServer.start_link(__MODULE__, %State{size: size, config: opts}, name: id)
+    GenServer.start_link(__MODULE__, %State{id: id, size: size, config: opts}, name: id)
   end
 
   @impl GenServer
@@ -57,7 +59,7 @@ defmodule PhoenixTest.Playwright.BrowserPool do
         {:reply, browser_id, state}
 
       map_size(state.in_use) < state.size ->
-        {:ok, browser} = launch(state.config)
+        {browser, state} = launch(state)
         state = do_checkout(state, from, browser.guid)
         {:reply, browser.guid, state}
 
@@ -87,9 +89,31 @@ defmodule PhoenixTest.Playwright.BrowserPool do
   @doc false
   defdelegate launch_browser!(config), to: PhoenixTest.Playwright.Browser
 
-  defp launch(config) do
-    config = config |> Config.validate!() |> Keyword.take(Config.setup_all_keys())
-    {:ok, launch_browser!(config)}
+  defp launch(state) do
+    config = state.config |> Config.validate!() |> Keyword.take(Config.setup_all_keys())
+    {config, state} = maybe_put_connection(config, state)
+    {launch_browser!(config), state}
+  end
+
+  # With `connection_per_browser` enabled, each pooled browser gets its own
+  # PlaywrightEx instance (connection + node.js server). Downstream calls find
+  # the right connection via guid routing (`PlaywrightEx.GuidRouter`), so only
+  # the browser launch needs an explicit `:connection`.
+  defp maybe_put_connection(config, state) do
+    if Config.global(:connection_per_browser) do
+      name = Module.concat(state.id, "Playwright#{state.launch_count}")
+      opts = Config.global() |> PhoenixTest.Playwright.Supervisor.playwright_opts() |> Keyword.put(:name, name)
+
+      case DynamicSupervisor.start_child(PhoenixTest.Playwright.ConnectionsSupervisor, {PlaywrightEx.Supervisor, opts}) do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+      end
+
+      connection = PlaywrightEx.Supervisor.connection_name(name)
+      {Keyword.put(config, :connection, connection), %{state | launch_count: state.launch_count + 1}}
+    else
+      {config, state}
+    end
   end
 
   defp do_checkout(state, from, browser_id) do

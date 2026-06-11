@@ -21,13 +21,17 @@ defmodule PhoenixTest.Playwright.Supervisor do
 
     children = [
       {PlaywrightEx.Supervisor, playwright_opts(config)},
+      {DynamicSupervisor, strategy: :one_for_one, name: PhoenixTest.Playwright.ConnectionsSupervisor},
       PhoenixTest.Playwright.BrowserPoolSupervisor
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
-  defp playwright_opts(config) do
+  @doc false
+  # Also used by BrowserPool to start one PlaywrightEx instance per browser
+  # (see the `connection_per_browser` config option).
+  def playwright_opts(config) do
     base = Keyword.take(config, ~w(timeout js_logger)a)
 
     case config[:ws_endpoint] do

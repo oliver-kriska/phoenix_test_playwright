@@ -109,6 +109,16 @@ schema_opts = [
     #{NimbleOptions.docs(browser_pool_opts, nest_level: 1)}
     """
   ],
+  connection_per_browser: [
+    default: false,
+    type: :boolean,
+    doc: """
+    Launch each pooled browser on its own Playwright connection (one node.js server each).
+    All Playwright protocol traffic normally flows through a single connection process and a
+    single-threaded node.js server; with many browsers running tests in parallel that pair
+    becomes a bottleneck. Only applies to browsers launched via `browser_pools`.
+    """
+  ],
   ecto_sandbox_stop_owner_delay: [
     default: 0,
     type: :non_neg_integer,
