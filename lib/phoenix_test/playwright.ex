@@ -24,6 +24,7 @@ defmodule PhoenixTest.Playwright do
   alias PhoenixTest.Playwright.CookieArgs
   alias PhoenixTest.Playwright.EventListener
   alias PhoenixTest.Playwright.EventRecorder
+  alias PhoenixTest.Utils
   alias PlaywrightEx.Artifact
   alias PlaywrightEx.BrowserContext
   alias PlaywrightEx.Dialog
@@ -31,8 +32,6 @@ defmodule PhoenixTest.Playwright do
   alias PlaywrightEx.Page
   alias PlaywrightEx.Selector
   alias PlaywrightEx.Tracing
-
-  require Logger
 
   defstruct [
     :context_id,
@@ -456,21 +455,61 @@ defmodule PhoenixTest.Playwright do
   end
 
   @doc false
+  # Wait for the URL via navigation events (`Frame.wait_for_url/2`) instead of
+  # polling `window.location` in a `retry/2` loop. Each poll iteration is a full
+  # protocol round trip; the event-based wait costs nothing while waiting.
+  # On timeout, delegate to `Assertions` once for the standard error message.
   def assert_path(conn, path, opts \\ []) do
-    if opts[:query_params] do
-      retry(fn -> Assertions.assert_path(conn, path, opts) end, timeout(opts))
-    else
-      retry(fn -> Assertions.assert_path(conn, path) end, timeout(opts))
+    matcher = path_and_query_matcher(path, opts[:query_params])
+
+    case Frame.wait_for_url(conn.frame_id, url: matcher, wait_until: "commit", timeout: timeout(opts)) do
+      {:ok, _} -> conn
+      {:error, _} -> fallback_path_assertion(conn, &Assertions.assert_path/3, path, opts)
     end
   end
 
   @doc false
   def refute_path(conn, path, opts \\ []) do
-    if opts[:query_params] do
-      retry(fn -> Assertions.refute_path(conn, path, opts) end, timeout(opts))
-    else
-      retry(fn -> Assertions.refute_path(conn, path) end, timeout(opts))
+    matcher = path_and_query_matcher(path, opts[:query_params])
+
+    case Frame.wait_for_url(conn.frame_id, url: &(not matcher.(&1)), wait_until: "commit", timeout: timeout(opts)) do
+      {:ok, _} -> conn
+      {:error, _} -> fallback_path_assertion(conn, &Assertions.refute_path/3, path, opts)
     end
+  end
+
+  defp fallback_path_assertion(conn, assertion, path, opts) do
+    if opts[:query_params], do: assertion.(conn, path, opts), else: assertion.(conn, path, [])
+    conn
+  end
+
+  # Mirrors the matching semantics of `PhoenixTest.Assertions.assert_path/3`:
+  # `*` matches a single path segment, query params (when given) must match exactly.
+  defp path_and_query_matcher(path, query_params) do
+    expected_params = query_params && Utils.stringify_keys_and_values(query_params)
+
+    fn %URI{} = uri ->
+      path_matches?(path, uri.path) and query_params_match?(uri, expected_params)
+    end
+  end
+
+  defp path_matches?(path, path), do: true
+
+  defp path_matches?(expected, actual) when is_binary(actual) do
+    expected_parts = String.split(expected, "/")
+    actual_parts = String.split(actual, "/")
+
+    length(expected_parts) == length(actual_parts) and
+      expected_parts |> Enum.zip(actual_parts) |> Enum.all?(fn {expected, actual} -> expected in ["*", actual] end)
+  end
+
+  defp path_matches?(_expected, _actual), do: false
+
+  defp query_params_match?(_uri, nil), do: true
+
+  defp query_params_match?(uri, expected_params) do
+    params = uri.query && Plug.Conn.Query.decode(uri.query)
+    params == expected_params or (is_nil(params) and expected_params == %{})
   end
 
   @doc false
