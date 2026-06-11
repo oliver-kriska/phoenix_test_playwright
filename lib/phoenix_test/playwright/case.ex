@@ -107,7 +107,14 @@ defmodule PhoenixTest.Playwright.Case do
 
     page_opts = Keyword.merge([timeout: config[:timeout]], config[:browser_page_opts])
     {:ok, page} = BrowserContext.new_page(browser_context.guid, page_opts)
-    {:ok, _} = Page.update_subscription(page.guid, event: :console, enabled: true, timeout: config[:timeout])
+
+    # Console events are only consumed by the `js_logger` (`PlaywrightEx.Connection`
+    # drops them otherwise). Skip the subscription entirely when logging is disabled:
+    # saves a protocol round trip per session and all console event traffic.
+    if Playwright.Config.global(:js_logger) do
+      {:ok, _} = Page.update_subscription(page.guid, event: :console, enabled: true, timeout: config[:timeout])
+    end
+
     {:ok, _} = Page.update_subscription(page.guid, event: :dialog, enabled: true, timeout: config[:timeout])
     on_exit(fn -> spawn(fn -> BrowserContext.close(browser_context.guid, timeout: config[:timeout]) end) end)
 
